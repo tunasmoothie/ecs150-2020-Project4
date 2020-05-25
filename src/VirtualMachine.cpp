@@ -65,7 +65,7 @@ void IdleMain(void* param){
 }
 
 void threadSchedule(TVMThreadState prevThreadState){
-    //MachineSuspendSignals(&sigState);
+    MachineSuspendSignals(&sigState);
     //Gets rid of dead threads from ready list
     while(readyThreadList.top()->state == VM_THREAD_STATE_DEAD){
         readyThreadList.pop();
@@ -81,6 +81,7 @@ void threadSchedule(TVMThreadState prevThreadState){
             runningThread = next;
             runningThread->state = VM_THREAD_STATE_RUNNING;
             MachineResumeSignals(&sigState);
+            //std::cout << "=switching from thread " << prev->tid << " to " << next->tid << "\n";
             MachineContextSwitch(&prev->cntx, &next->cntx);
         }
     }
@@ -93,6 +94,7 @@ void threadSchedule(TVMThreadState prevThreadState){
         runningThread = next;
         runningThread->state = VM_THREAD_STATE_RUNNING;
         MachineResumeSignals(&sigState);
+        //std::cout << "=switching from thread " << prev->tid << " to " << next->tid << "\n";
         MachineContextSwitch(&prev->cntx, &next->cntx);
     }
     else if(prevThreadState == VM_THREAD_STATE_DEAD){
@@ -101,17 +103,17 @@ void threadSchedule(TVMThreadState prevThreadState){
         readyThreadList.pop();
         runningThread->state = VM_THREAD_STATE_RUNNING;
         MachineResumeSignals(&sigState);
+        //std::cout << "=switching from thread " << prev->tid << " to " << runningThread->tid << "\n";
         MachineContextSwitch(&prev->cntx, &runningThread->cntx);
     }
     MachineResumeSignals(&sigState);
 }
 
 void AlarmCallback(void* calldata){
-    //std::cout << "-ALARM" << "\n";
-    g_tick++;
     MachineSuspendSignals(&sigState);
-    if(waitingThreadList.size() != 0){
-        if(waitingThreadList.top()->timeup <= g_tick){
+    g_tick++;
+    if(!waitingThreadList.empty()){
+        if(waitingThreadList.top()->timeup <= g_tick && waitingThreadList.top()->prio > runningThread->prio){
             Thread* prev = runningThread;
             Thread* next = waitingThreadList.top();
 
