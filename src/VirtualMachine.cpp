@@ -23,6 +23,7 @@ struct Thread{
     void *stackAdr;
     size_t stackSize;
     TVMTick timeup;
+    int fileResult;
 };
 
 struct TCBComparePrio {
@@ -43,7 +44,6 @@ volatile unsigned int g_tick;
 unsigned int tickMS;
 TMachineSignalState sigState;
 int threadCnt = 0;
-int fileResult;
 void* sharedMem;
 
 Thread* runningThread;
@@ -129,7 +129,13 @@ void AlarmCallback(void* calldata){
 }
 
 void FileCallback(void* calldata, int result){
-
+    MachineSuspendSignals(&sigState);
+    Thread *t = (Thread*)(calldata);
+    t->state = VM_THREAD_STATE_READY;
+    t->fileResult = result;
+    readyThreadList.push(t);
+    MachineResumeSignals(&sigState);
+    threadSchedule(VM_THREAD_STATE_READY);
 }
 
 // Skeleton function
@@ -141,7 +147,6 @@ void ThreadWrapper(void* param){
     t->state = VM_THREAD_STATE_DEAD;
     VMThreadTerminate(t->tid);
 }
-
 //=============================================================
 
 
@@ -328,16 +333,77 @@ TVMStatus VMThreadSleep(TVMTick tick){
 
 // FILE OPERATIONS
 //=====================================================================================================
+TVMStatus VMFileOpen(const char *filename, int flags, int mode, int *filedescriptor){
+    if(filename == NULL || filedescriptor == NULL)
+        return VM_STATUS_ERROR_INVALID_PARAMETER;
+
+    MachineFileOpen(filename, flags, mode, &FileCallback, runningThread);
+
+    threadSchedule(VM_THREAD_STATE_DEAD);
+
+    if(runningThread->fileResult < 0)
+        return VM_STATUS_FAILURE;
+    else{
+        *filedescriptor = runningThread->fileResult;
+        return VM_STATUS_SUCCESS;
+    }
+}
+
+TVMStatus VMFileClose(int filedescriptor){
+    MachineFileClose(filedescriptor, &FileCallback, runningThread);
+
+    threadSchedule(VM_THREAD_STATE_DEAD);
+
+    if(runningThread->fileResult < 0)
+        return VM_STATUS_FAILURE;
+    else{
+        return VM_STATUS_SUCCESS;
+    }
+}
+
+TVMStatus VMFileRead(int filedescriptor, void *data, int *length){
+    if(data == NULL || length == NULL)
+        return VM_STATUS_ERROR_INVALID_PARAMETER;
+
+    MachineFileRead(filedescriptor, data, *length, &FileCallback, runningThread);
+
+    threadSchedule(VM_THREAD_STATE_DEAD);
+
+    if(runningThread->fileResult < 0)
+        return VM_STATUS_FAILURE;
+    else{
+        *length = runningThread->fileResult;
+        return VM_STATUS_SUCCESS;
+    }
+}
+
 TVMStatus VMFileWrite(int filedescriptor, void *data, int *length){
     if(data == NULL || length == NULL)
         return VM_STATUS_ERROR_INVALID_PARAMETER;
 
-    int status = write(filedescriptor, data, *length);
+    MachineFileWrite(filedescriptor, data, *length, &FileCallback, runningThread);
 
-    if(status == -1)
+    threadSchedule(VM_THREAD_STATE_DEAD);
+
+    if(runningThread->fileResult < 0)
         return VM_STATUS_FAILURE;
-    else
+    else{
+        *length = runningThread->fileResult;
         return VM_STATUS_SUCCESS;
+    }
+}
+
+TVMStatus VMFileSeek(int filedescriptor, int offset, int whence, int *newoffset){
+    MachineFileSeek(filedescriptor, offset, whence, &FileCallback, runningThread);
+
+    threadSchedule(VM_THREAD_STATE_DEAD);
+
+    if(runningThread->fileResult < 0)
+        return VM_STATUS_FAILURE;
+    else{
+        *newoffset = runningThread->fileResult;
+        return VM_STATUS_SUCCESS;
+    }
 }
 //=====================================================================================================
 
