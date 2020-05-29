@@ -73,6 +73,7 @@ int mutexCnt = 0;
 
 SharedMem* sharedMem;
 Thread* runningThread;
+void* test;
 
 std::vector<Thread*> threadList;
 std::vector<Mutex*> mutexList;
@@ -88,8 +89,9 @@ void EmptyMain(void* param){
 
 void IdleMain(void* param){
     MachineEnableSignals();
-    //std::cout << "-Idling..." << "\n";
-    while(1);
+    while(1){
+        //std::cout << "-Idling..." << "\n";
+    }
 }
 
 #define WAIT_FOR_PRIO        0
@@ -102,10 +104,9 @@ void threadSchedule(int scheduleType){
     //unsigned int prevTick = g_tick;
     //std::cout << g_tick << "\n";
 
-
     MachineSuspendSignals(&sigState);
     //Gets rid of dead threads from ready list
-    while(!readyThreadList.empty() && readyThreadList.top()->state == VM_THREAD_STATE_DEAD){
+    while(readyThreadList.top()->state == VM_THREAD_STATE_DEAD){
         readyThreadList.pop();
     }
 
@@ -113,13 +114,13 @@ void threadSchedule(int scheduleType){
         if(runningThread->prio < readyThreadList.top()->prio){
             Thread* prev = runningThread;
             Thread* next = readyThreadList.top();
+            //std::cout << "-switching from thread " << prev->tid << " to " << next->tid << "\n";
             readyThreadList.pop();
             prev->state = VM_THREAD_STATE_READY;
             readyThreadList.push(prev);
             runningThread = next;
             runningThread->state = VM_THREAD_STATE_RUNNING;
             MachineResumeSignals(&sigState);
-            //std::cout << "=switching from thread " << prev->tid << " to " << next->tid << "\n";
             MachineContextSwitch(&prev->cntx, &next->cntx);
         }
     }
@@ -137,6 +138,7 @@ void threadSchedule(int scheduleType){
     else if(scheduleType == WAIT_FOR_FILE || scheduleType ==  WAIT_FOR_MUTEX){
         Thread* prev = runningThread;
         Thread* next = readyThreadList.top();
+        //std::cout << "-switching from thread " << prev->tid << " to " << next->tid << "\n";
         readyThreadList.pop();
         prev->state = VM_THREAD_STATE_WAITING;
         runningThread = next;
@@ -191,8 +193,6 @@ void FileCallback(void* calldata, int result){
 void ThreadWrapper(void* param){
     Thread* t = (Thread*)(param);
     (t->entry)(t->param);
-
-    t->state = VM_THREAD_STATE_DEAD;
     VMThreadTerminate(t->tid);
 }
 //=============================================================
@@ -201,12 +201,15 @@ void ThreadWrapper(void* param){
 // BASIC OPERATIONS
 //=====================================================================================================
 TVMStatus VMStart(int tickms, TVMMemorySize sharedsize, int argc, char *argv[]){
-    std::cout << "cd" << "\n";
     TVMMainEntry main = VMLoadModule(argv[0]);
     tickMS = tickms;
+    /*
     sharedMem = new SharedMem();
     void* memPtr = MachineInitialize(sharedsize);
     sharedMem->Initialize(memPtr, sharedsize);
+    */
+
+    test = MachineInitialize(sharedsize);
     MachineEnableSignals();
     MachineRequestAlarm(useconds_t(1000 * tickMS), &AlarmCallback, &tickMS);
 
@@ -320,11 +323,12 @@ TVMStatus VMThreadTerminate(TVMThreadID threadID){
     MachineSuspendSignals(&sigState);
     for(auto it = threadList.begin(); it != threadList.end(); ++it){
         if((*it)->tid == threadID){
-            if((*it)->state != VM_THREAD_STATE_DEAD){
+            if((*it)->state == VM_THREAD_STATE_DEAD){
                 MachineResumeSignals(&sigState);
                 return VM_STATUS_ERROR_INVALID_STATE;
             }
             else{
+                runningThread->state = VM_THREAD_STATE_DEAD;
                 threadSchedule(THREAD_TERMINATED);
                 MachineResumeSignals(&sigState);
                 return VM_STATUS_SUCCESS;
@@ -362,8 +366,15 @@ TVMStatus VMThreadSleep(TVMTick tick){
     }
 
     MachineSuspendSignals(&sigState);
-    runningThread->timeup = g_tick + tick;
-    threadSchedule(WAIT_FOR_SLEEP);
+    if(tick == VM_TIMEOUT_IMMEDIATE){
+        MachineResumeSignals(&sigState);
+        threadSchedule(WAIT_FOR_PRIO);
+    }
+    else{
+        runningThread->timeup = g_tick + tick;
+        threadSchedule(WAIT_FOR_SLEEP);
+    }
+
     MachineResumeSignals(&sigState);
     return VM_STATUS_SUCCESS;
 }
@@ -421,14 +432,16 @@ TVMStatus VMFileWrite(int filedescriptor, void *data, int *length){
     if(data == NULL || length == NULL)
         return VM_STATUS_ERROR_INVALID_PARAMETER;
 
-    /*
-    memcpy(sharedMem->memChunks[0], data, *length*sizeof(char));  //TEMP FIX FOR STACK SMASHING, CAUSED BY MEMORY CHUNK < 512
-    MachineFileWrite(filedescriptor, sharedMem->memChunks[0], *length, &FileCallback, runningThread);
+    //memcpy(sharedMem->memChunks[0], data, *length*sizeof(char));  //TEMP FIX FOR STACK SMASHING, CAUSED BY MEMORY CHUNK < 512
+    //MachineFileWrite(filedescriptor, sharedMem->memChunks[0], *length, &FileCallback, runningThread);
+
+    memcpy(test, data, *length);
+    MachineFileWrite(filedescriptor, test, *length, &FileCallback, runningThread);
+    test = (char*)test + *length;
 
     threadSchedule(WAIT_FOR_FILE);
-     */
 
-    write(filedescriptor, data, *length);
+    //write(filedescriptor, data, *length);
 
     if(runningThread->fileResult < 0)
         return VM_STATUS_FAILURE;
@@ -453,7 +466,7 @@ TVMStatus VMFileSeek(int filedescriptor, int offset, int whence, int *newoffset)
 //=====================================================================================================
 
 
-// MUTEX
+// MUTEX OPERATIONS
 //=====================================================================================================
 TVMStatus VMMutexCreate(TVMMutexIDRef mutexref){
     if(mutexref == NULL)
@@ -491,7 +504,7 @@ TVMStatus VMMutexQuery(TVMMutexID mutexID, TVMThreadIDRef ownerref){
 
     for(auto it = mutexList.begin(); it != mutexList.end(); ++it){
         if((*it)->mid == mutexID){
-            *ownerref = (*it)->locked ? (*it)->owner : VM_STATUS_ERROR_INVALID_ID;
+            *ownerref = (*it)->locked ? (*it)->owner : VM_THREAD_ID_INVALID;
             return VM_STATUS_SUCCESS;
         }
     }
@@ -510,6 +523,7 @@ TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
                     (*it)->owner = runningThread->tid;
                     (*it)->locked = true;
                     MachineResumeSignals(&sigState);
+                    //std::cout << "-Thread " << runningThread->tid << " acquired mutex " << mutexID << "\n";
                     return VM_STATUS_SUCCESS;
                 }
                     //Mutex already locked
@@ -518,7 +532,7 @@ TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
                     (*it)->waitlist.push(runningThread);
                     threadSchedule(WAIT_FOR_MUTEX);
                     if(timeup != VM_TIMEOUT_INFINITE && g_tick > timeup){
-                        std::cout << "-Thread " << runningThread->tid << " failed to acquire mutex " << mutexID << "\n";
+                        //std::cout << "-Thread " << runningThread->tid << " failed to acquire mutex " << mutexID << "\n";
                         MachineResumeSignals(&sigState);
                         return VM_STATUS_FAILURE;
                     }
