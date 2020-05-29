@@ -32,7 +32,7 @@ void MachineContextCreate(SMachineContextRef mcntxref, void (*entry)(void *), vo
 typedef void (*TMachineAlarmCallback)(void *calldata);
 typedef void (*TMachineFileCallback)(void *calldata, int result);
 typedef sigset_t TMachineSignalState, *TMachineSignalStateRef;
-void MachineInitialize(void);
+void *MachineInitialize(size_t sharesize);
 void MachineTerminate(void);
 void MachineEnableSignals(void);
 void MachineSuspendSignals(TMachineSignalStateRef sigstate);
