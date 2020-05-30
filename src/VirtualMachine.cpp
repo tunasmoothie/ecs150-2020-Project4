@@ -150,7 +150,6 @@ void threadSchedule(int scheduleType){
         SMachineContext tmp;
         MachineContextSwitch(&tmp, &runningThread->cntx);
     }
-
     MachineResumeSignals(&sigState);
 }
 
@@ -170,6 +169,7 @@ void AlarmCallback(void* calldata){
 }
 
 void FileCallback(void* calldata, int result){
+    std::cout << "-Thread " << ((Thread*)(calldata))->tid << " filecallback\n";
     MachineSuspendSignals(&sigState);
     Thread *t = (Thread*)(calldata);
     t->state = VM_THREAD_STATE_READY;
@@ -260,32 +260,28 @@ TVMStatus VMThreadCreate(TVMThreadEntry entry, void *param, TVMMemorySize memsiz
 }
 
 TVMStatus VMThreadDelete(TVMThreadID threadID){
-    MachineSuspendSignals(&sigState);
     for(auto it = threadList.begin(); it != threadList.end(); ++it){
         if((*it)->tid == threadID){
             if((*it)->state != VM_THREAD_STATE_DEAD){
-                MachineResumeSignals(&sigState);
                 return VM_STATUS_ERROR_INVALID_STATE;
             }
             else{
+                MachineSuspendSignals(&sigState);
                 threadList.erase(it);
-                threadSchedule(WAIT_FOR_PRIO);
                 MachineResumeSignals(&sigState);
+                threadSchedule(WAIT_FOR_PRIO);
                 return VM_STATUS_SUCCESS;
             }
         }
     }
-    MachineResumeSignals(&sigState);
     return VM_STATUS_ERROR_INVALID_ID;
 }
 
 TVMStatus VMThreadActivate(TVMThreadID threadID){
-    MachineSuspendSignals(&sigState);
     Thread *t = NULL;
     for(auto it = threadList.begin(); it != threadList.end(); ++it){
         if((*it)->tid == threadID){
             if((*it)->state != VM_THREAD_STATE_DEAD){
-                MachineResumeSignals(&sigState);
                 return VM_STATUS_ERROR_INVALID_STATE;
             }
             else
@@ -297,26 +293,25 @@ TVMStatus VMThreadActivate(TVMThreadID threadID){
         return VM_STATUS_ERROR_INVALID_ID;
     }
 
+    MachineSuspendSignals(&sigState);
     t->state = VM_THREAD_STATE_READY;
     MachineContextCreate(&(t->cntx), &ThreadWrapper, t, t->stackAdr, t->stackSize);
     readyThreadList.push(t);
+    MachineResumeSignals(&sigState);
 
     if(threadID > 1)
         threadSchedule(WAIT_FOR_PRIO);
 
-    MachineResumeSignals(&sigState);
     return VM_STATUS_SUCCESS;
 }
 
 TVMStatus VMThreadTerminate(TVMThreadID threadID){
-    MachineSuspendSignals(&sigState);
     for(auto it = threadList.begin(); it != threadList.end(); ++it){
         if((*it)->tid == threadID){
-            if((*it)->state == VM_THREAD_STATE_DEAD){
-                MachineResumeSignals(&sigState);
+            if((*it)->state == VM_THREAD_STATE_DEAD)
                 return VM_STATUS_ERROR_INVALID_STATE;
-            }
             else{
+                MachineSuspendSignals(&sigState);
                 runningThread->state = VM_THREAD_STATE_DEAD;
                 threadSchedule(THREAD_TERMINATED);
                 MachineResumeSignals(&sigState);
@@ -324,7 +319,6 @@ TVMStatus VMThreadTerminate(TVMThreadID threadID){
             }
         }
     }
-    MachineResumeSignals(&sigState);
     return VM_STATUS_ERROR_INVALID_ID;
 }
 
@@ -354,17 +348,16 @@ TVMStatus VMThreadSleep(TVMTick tick){
         return VM_STATUS_ERROR_INVALID_PARAMETER;
     }
 
-    MachineSuspendSignals(&sigState);
     if(tick == VM_TIMEOUT_IMMEDIATE){
-        MachineResumeSignals(&sigState);
         threadSchedule(WAIT_FOR_PRIO);
     }
     else{
+        MachineSuspendSignals(&sigState);
         runningThread->timeup = g_tick + tick;
+        MachineResumeSignals(&sigState);
         threadSchedule(WAIT_FOR_SLEEP);
     }
 
-    MachineResumeSignals(&sigState);
     return VM_STATUS_SUCCESS;
 }
 //=====================================================================================================
@@ -425,6 +418,7 @@ TVMStatus VMFileWrite(int filedescriptor, void *data, int *length){
     if(data == NULL || length == NULL)
         return VM_STATUS_ERROR_INVALID_PARAMETER;
 
+    MachineSuspendSignals(&sigState);
     void* mem = NULL;
     if(!sharedMem->memChunks.empty()){
         mem = sharedMem->memChunks.back();
@@ -432,10 +426,11 @@ TVMStatus VMFileWrite(int filedescriptor, void *data, int *length){
     }
     memcpy(mem, data, *length);
     MachineFileWrite(filedescriptor, mem, *length, &FileCallback, runningThread);
-    threadSchedule(WAIT_FOR_FILE);
-    sharedMem->memChunks.push_back(mem);
 
-    //write(filedescriptor, data, *length);
+    MachineResumeSignals(&sigState);
+    threadSchedule(WAIT_FOR_FILE);
+
+    sharedMem->memChunks.push_back(mem);
 
     if(runningThread->fileResult < 0)
         return VM_STATUS_FAILURE;
@@ -507,27 +502,25 @@ TVMStatus VMMutexQuery(TVMMutexID mutexID, TVMThreadIDRef ownerref){
 }
 
 TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
-    MachineSuspendSignals(&sigState);
     for(auto it = mutexList.begin(); it != mutexList.end(); ++it){
         if((*it)->mid == mutexID){
             unsigned int timeup = g_tick + timeout;
             while(1){
                 //Mutex not already locked
                 if(!(*it)->locked){
+                    MachineSuspendSignals(&sigState);
                     (*it)->owner = runningThread->tid;
                     (*it)->locked = true;
                     MachineResumeSignals(&sigState);
-                    //std::cout << "-Thread " << runningThread->tid << " acquired mutex " << mutexID << "\n";
                     return VM_STATUS_SUCCESS;
                 }
                     //Mutex already locked
                 else{
-                    //std::cout << "-Thread " << runningThread->tid << " waiting to acquire mutex " << mutexID << "\n";
+                    MachineSuspendSignals(&sigState);
                     (*it)->waitlist.push(runningThread);
+                    MachineResumeSignals(&sigState);
                     threadSchedule(WAIT_FOR_MUTEX);
                     if(timeup != VM_TIMEOUT_INFINITE && g_tick > timeup){
-                        //std::cout << "-Thread " << runningThread->tid << " failed to acquire mutex " << mutexID << "\n";
-                        MachineResumeSignals(&sigState);
                         return VM_STATUS_FAILURE;
                     }
                     else
@@ -536,35 +529,35 @@ TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
             }
         }
     }
-    MachineResumeSignals(&sigState);
     return VM_STATUS_ERROR_INVALID_ID;
-
 }
 
 
 TVMStatus VMMutexRelease(TVMMutexID mutexID){
-    MachineSuspendSignals(&sigState);
     for(auto it = mutexList.begin(); it != mutexList.end(); ++it){
         if((*it)->mid == mutexID){
             if((*it)->owner != runningThread->tid){
-                MachineResumeSignals(&sigState);
                 return VM_STATUS_ERROR_INVALID_STATE;
             }
 
+            MachineSuspendSignals(&sigState);
             (*it)->locked = false;
             (*it)->owner = 0;
-            if((*it)->waitlist.empty()){
-                MachineResumeSignals(&sigState);
+            MachineResumeSignals(&sigState);
+
+            if((*it)->waitlist.empty())
                 return VM_STATUS_SUCCESS;
-            }
+
             else if((*it)->waitlist.top()->prio > runningThread->prio){
+                MachineSuspendSignals(&sigState);
                 readyThreadList.push((*it)->waitlist.top());
                 (*it)->waitlist.pop();
-                threadSchedule(WAIT_FOR_PRIO);
                 MachineResumeSignals(&sigState);
+                threadSchedule(WAIT_FOR_PRIO);
                 return VM_STATUS_SUCCESS;
             }
             else {
+                MachineSuspendSignals(&sigState);
                 readyThreadList.push((*it)->waitlist.top());
                 (*it)->waitlist.pop();
                 MachineResumeSignals(&sigState);
@@ -572,8 +565,6 @@ TVMStatus VMMutexRelease(TVMMutexID mutexID){
             }
         }
     }
-
-    MachineResumeSignals(&sigState);
     return VM_STATUS_ERROR_INVALID_ID;
 }
 //=====================================================================================================
