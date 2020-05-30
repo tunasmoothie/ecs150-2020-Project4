@@ -69,7 +69,6 @@ int mutexCnt = 0;
 
 SharedMem* sharedMem;
 Thread* runningThread;
-void* test;
 
 std::vector<Thread*> threadList;
 std::vector<Mutex*> mutexList;
@@ -84,10 +83,7 @@ void EmptyMain(void* param){
 }
 
 void IdleMain(void* param){
-    MachineEnableSignals();
-    while(1){
-        //std::cout << "-Idling..." << "\n";
-    }
+    while(1);
 }
 
 #define WAIT_FOR_PRIO        0
@@ -97,10 +93,7 @@ void IdleMain(void* param){
 #define THREAD_TERMINATED    4
 
 void threadSchedule(int scheduleType){
-    //unsigned int prevTick = g_tick;
-    //std::cout << g_tick << "\n";
 
-    MachineSuspendSignals(&sigState);
     //Gets rid of dead threads from ready list
     while(readyThreadList.top()->state == VM_THREAD_STATE_DEAD){
         readyThreadList.pop();
@@ -108,6 +101,7 @@ void threadSchedule(int scheduleType){
 
     if(scheduleType == WAIT_FOR_PRIO){
         if(runningThread->prio < readyThreadList.top()->prio){
+            MachineSuspendSignals(&sigState);
             Thread* prev = runningThread;
             Thread* next = readyThreadList.top();
             //std::cout << "-switching from thread " << prev->tid << " to " << next->tid << "\n";
@@ -121,6 +115,7 @@ void threadSchedule(int scheduleType){
         }
     }
     else if(scheduleType == WAIT_FOR_SLEEP){
+        MachineSuspendSignals(&sigState);
         Thread* prev = runningThread;
         Thread* next = readyThreadList.top();
         readyThreadList.pop();
@@ -132,6 +127,7 @@ void threadSchedule(int scheduleType){
         MachineContextSwitch(&prev->cntx, &next->cntx);
     }
     else if(scheduleType == WAIT_FOR_FILE || scheduleType ==  WAIT_FOR_MUTEX){
+        MachineSuspendSignals(&sigState);
         Thread* prev = runningThread;
         Thread* next = readyThreadList.top();
         //std::cout << "-switching from thread " << prev->tid << " to " << next->tid << "\n";
@@ -143,17 +139,18 @@ void threadSchedule(int scheduleType){
         MachineContextSwitch(&prev->cntx, &next->cntx);
     }
     else if(scheduleType == THREAD_TERMINATED){
+        MachineSuspendSignals(&sigState);
         runningThread = readyThreadList.top();
         readyThreadList.pop();
         runningThread->state = VM_THREAD_STATE_RUNNING;
-        MachineResumeSignals(&sigState);
         SMachineContext tmp;
+        MachineResumeSignals(&sigState);
         MachineContextSwitch(&tmp, &runningThread->cntx);
     }
-    MachineResumeSignals(&sigState);
 }
 
 void AlarmCallback(void* calldata){
+    //std::cout << "-AlARM" << "\n";
     MachineSuspendSignals(&sigState);
     g_tick++;
     if(!waitingThreadList.empty()){
@@ -169,12 +166,12 @@ void AlarmCallback(void* calldata){
 }
 
 void FileCallback(void* calldata, int result){
-    std::cout << "-Thread " << ((Thread*)(calldata))->tid << " filecallback\n";
     MachineSuspendSignals(&sigState);
     Thread *t = (Thread*)(calldata);
     t->state = VM_THREAD_STATE_READY;
     t->fileResult = result;
     readyThreadList.push(t);
+    std::cout << "-Thread " << ((Thread*)(calldata))->tid << " filecallback\n";
     MachineResumeSignals(&sigState);
     threadSchedule(WAIT_FOR_PRIO);
 }
@@ -311,10 +308,8 @@ TVMStatus VMThreadTerminate(TVMThreadID threadID){
             if((*it)->state == VM_THREAD_STATE_DEAD)
                 return VM_STATUS_ERROR_INVALID_STATE;
             else{
-                MachineSuspendSignals(&sigState);
                 runningThread->state = VM_THREAD_STATE_DEAD;
                 threadSchedule(THREAD_TERMINATED);
-                MachineResumeSignals(&sigState);
                 return VM_STATUS_SUCCESS;
             }
         }
@@ -429,6 +424,7 @@ TVMStatus VMFileWrite(int filedescriptor, void *data, int *length){
 
     MachineResumeSignals(&sigState);
     threadSchedule(WAIT_FOR_FILE);
+    //std::cout << "-back to thread " << runningThread->tid << "\n";
 
     sharedMem->memChunks.push_back(mem);
 
