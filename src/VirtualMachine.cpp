@@ -158,21 +158,15 @@ void AlarmCallback(void* calldata){
     MachineSuspendSignals(&sigState);
     g_tick++;
     if(!waitingThreadList.empty()){
-        if(waitingThreadList.top()->timeup <= g_tick && waitingThreadList.top()->prio > runningThread->prio){
-            Thread* prev = runningThread;
-            Thread* next = waitingThreadList.top();
-
+        if(waitingThreadList.top()->timeup <= g_tick){
+            Thread* t = waitingThreadList.top();
             waitingThreadList.pop();
-            prev->state = VM_THREAD_STATE_READY;
-            next->state = VM_THREAD_STATE_RUNNING;
-            readyThreadList.push(prev);
-
-            runningThread = next;
-
-            MachineResumeSignals(&sigState);
-            MachineContextSwitch(&prev->cntx, &next->cntx);
+            t->state = VM_THREAD_STATE_READY;
+            readyThreadList.push(t);
         }
     }
+    MachineResumeSignals(&sigState);
+    threadSchedule(WAIT_FOR_PRIO);
 }
 
 void FileCallback(void* calldata, int result){
@@ -271,7 +265,7 @@ TVMStatus VMThreadDelete(TVMThreadID threadID){
         if((*it)->tid == threadID){
             if((*it)->state != VM_THREAD_STATE_DEAD){
                 MachineResumeSignals(&sigState);
-               return VM_STATUS_ERROR_INVALID_STATE;
+                return VM_STATUS_ERROR_INVALID_STATE;
             }
             else{
                 threadList.erase(it);
@@ -526,7 +520,7 @@ TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
                     //std::cout << "-Thread " << runningThread->tid << " acquired mutex " << mutexID << "\n";
                     return VM_STATUS_SUCCESS;
                 }
-                //Mutex already locked
+                    //Mutex already locked
                 else{
                     //std::cout << "-Thread " << runningThread->tid << " waiting to acquire mutex " << mutexID << "\n";
                     (*it)->waitlist.push(runningThread);
