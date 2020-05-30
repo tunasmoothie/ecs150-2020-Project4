@@ -41,10 +41,6 @@ struct TCBCompareTimeup {
 struct SharedMem{
     std::vector<void*> memChunks;
 
-    void* &operator[](int i) {
-        return this->memChunks[i];
-    }
-
     void Initialize(void* baseAdr, TVMMemorySize size){
         int i = 0;
         while(size > 0){
@@ -79,7 +75,7 @@ std::vector<Thread*> threadList;
 std::vector<Mutex*> mutexList;
 std::priority_queue<Thread*, std::vector<Thread*>, TCBCompareTimeup> waitingThreadList;
 std::priority_queue<Thread*, std::vector<Thread*>, TCBComparePrio> readyThreadList;
-//=============================================================
+//=============== ==============================================
 
 // HELPER FUNCTIONS
 //=============================================================
@@ -203,13 +199,12 @@ void ThreadWrapper(void* param){
 TVMStatus VMStart(int tickms, TVMMemorySize sharedsize, int argc, char *argv[]){
     TVMMainEntry main = VMLoadModule(argv[0]);
     tickMS = tickms;
-    /*
+
     sharedMem = new SharedMem();
     void* memPtr = MachineInitialize(sharedsize);
     sharedMem->Initialize(memPtr, sharedsize);
-    */
 
-    test = MachineInitialize(sharedsize);
+    //test = MachineInitialize(sharedsize);
     MachineEnableSignals();
     MachineRequestAlarm(useconds_t(1000 * tickMS), &AlarmCallback, &tickMS);
 
@@ -415,10 +410,14 @@ TVMStatus VMFileRead(int filedescriptor, void *data, int *length){
     if(data == NULL || length == NULL)
         return VM_STATUS_ERROR_INVALID_PARAMETER;
 
-    MachineFileRead(filedescriptor, sharedMem->memChunks[0], *length, &FileCallback, runningThread);
-
+    void* mem = NULL;
+    if(!sharedMem->memChunks.empty()){
+        mem = sharedMem->memChunks.back();
+        sharedMem->memChunks.pop_back();
+    }
+    MachineFileRead(filedescriptor, mem, *length, &FileCallback, runningThread);
     threadSchedule(WAIT_FOR_FILE);
-    memcpy(data, sharedMem->memChunks[0], *length*sizeof(char));   //TEMP FIX FOR STACK SMASHING, CAUSED BY MEMORY CHUNK < 512
+    memcpy(data, mem, *length*sizeof(char));   //TEMP FIX FOR STACK SMASHING, CAUSED BY MEMORY CHUNK < 512
 
     if(runningThread->fileResult < 0)
         return VM_STATUS_FAILURE;
@@ -432,14 +431,15 @@ TVMStatus VMFileWrite(int filedescriptor, void *data, int *length){
     if(data == NULL || length == NULL)
         return VM_STATUS_ERROR_INVALID_PARAMETER;
 
-    //memcpy(sharedMem->memChunks[0], data, *length*sizeof(char));  //TEMP FIX FOR STACK SMASHING, CAUSED BY MEMORY CHUNK < 512
-    //MachineFileWrite(filedescriptor, sharedMem->memChunks[0], *length, &FileCallback, runningThread);
-
-    memcpy(test, data, *length);
-    MachineFileWrite(filedescriptor, test, *length, &FileCallback, runningThread);
-    test = (char*)test + *length;
-
+    void* mem = NULL;
+    if(!sharedMem->memChunks.empty()){
+        mem = sharedMem->memChunks.back();
+        sharedMem->memChunks.pop_back();
+    }
+    memcpy(mem, data, *length);
+    MachineFileWrite(filedescriptor, mem, *length, &FileCallback, runningThread);
     threadSchedule(WAIT_FOR_FILE);
+    sharedMem->memChunks.push_back(mem);
 
     //write(filedescriptor, data, *length);
 
@@ -526,7 +526,7 @@ TVMStatus VMMutexAcquire(TVMMutexID mutexID, TVMTick timeout){
                     //std::cout << "-Thread " << runningThread->tid << " acquired mutex " << mutexID << "\n";
                     return VM_STATUS_SUCCESS;
                 }
-                    //Mutex already locked
+                //Mutex already locked
                 else{
                     //std::cout << "-Thread " << runningThread->tid << " waiting to acquire mutex " << mutexID << "\n";
                     (*it)->waitlist.push(runningThread);
