@@ -52,7 +52,7 @@ APPLDFLAGS += $(DEFINES) $(INCLUDES) -shared -rdynamic -Wl,-E
 endif
 
 all: directories $(BIN_DIR)/vm 
-apps: directories $(BIN_DIR)/hello.so $(BIN_DIR)/sleep.so $(BIN_DIR)/file.so $(BIN_DIR)/thread.so $(BIN_DIR)/preempt.so $(BIN_DIR)/file2.so $(BIN_DIR)/mutex.so $(BIN_DIR)/copyfile.so $(BIN_DIR)/badprogram.so $(BIN_DIR)/badprogram2.so
+apps: directories $(BIN_DIR)/hello.so $(BIN_DIR)/sleep.so $(BIN_DIR)/file.so $(BIN_DIR)/thread.so $(BIN_DIR)/preempt.so $(BIN_DIR)/file2.so $(BIN_DIR)/mutex.so $(BIN_DIR)/copyfile.so $(BIN_DIR)/badprogram.so $(BIN_DIR)/badprogram2.so $(BIN_DIR)/copyfile2.so $(BIN_DIR)/shell.so $(BIN_DIR)/shell2.so 
 
 $(BIN_DIR)/vm: $(OBJS)
 	$(CXX) $(OBJS) $(LDFLAGS) -o $(BIN_DIR)/vm
@@ -83,15 +83,9 @@ $(OBJ_DIR)/%.o : $(SRC_DIR)/%.cpp
 
 	
 .PHONY: directories
-directories: $(OBJ_DIR) $(BIN_DIR) $(APPOBJ_DIR)
-
-$(OBJ_DIR):
+directories:
 	mkdir -p $(OBJ_DIR)
-
-$(BIN_DIR):
 	mkdir -p $(BIN_DIR)
-
-$(APPOBJ_DIR):
 	mkdir -p $(APPOBJ_DIR)
 
 	
@@ -102,4 +96,4 @@ clean_directories:
 	rm -rf $(APPOBJ_DIR)
 	
 .PHONY: clean
-clean: clean_directories
+clean: clean_directories directories
