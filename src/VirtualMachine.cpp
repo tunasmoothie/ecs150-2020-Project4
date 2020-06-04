@@ -17,6 +17,9 @@ TVMStatus VMDateTime(SVMDateTimeRef curdatetime);
 void ArrayCopy(const uint8_t* src, uint8_t* dest, int index, int len);
 TVMStatus FileSeek(int filedescriptor, int offset, int whence, int *newoffset);
 TVMStatus FileRead(int filedescriptor, void *data, int *length);
+void VMStringCopy(char *dest, const char *src);
+void VMStringCopyN(char *dest, const char *src, int32_t n);
+TVMStatus VMDateTime(SVMDateTimeRef curdatetime);
 
 // OBJECTS
 //=============================================================
@@ -146,6 +149,7 @@ struct BPB {
     }
 
     void PrintFATInfo() {
+        std::cout << "============== BPB INFO ================\n";
         std::cout << "OEM Name:             " << BS_OEMName << std::endl
                   << "Bytes Per Sector:     " << BPB_BytsPerSec << std::endl
                   << "Sectors Per Cluster:  " << BPB_SecPerClus << std::endl
@@ -161,6 +165,7 @@ struct BPB {
                   << "Sector Count 32:      " << BPB_TotSec32 << std::endl
                   << "Drive Num:            " << BS_DrvNum << std::endl
                   << "Boot Signature:       " << BS_BootSig << std::endl;
+        std::cout << "=========================================\n\n";
     }
 };
 #pragma pack()
@@ -332,7 +337,7 @@ int FindFreeRootEntry(){
     return -1;
 }
 
-// Returns byte index of next free FAT entry in cache
+// Returns FAT index of next free FAT entry
 int FindFreeFATEntry(){
     int offset;
     uint16_t tempEntry[2];
@@ -341,7 +346,7 @@ int FindFreeFATEntry(){
     for(int i = 0; i < BPBcache->BPB_FATSz16*512; i+=2){
         FileRead(FATFd, tempEntry, &len);
         if(tempEntry[0] == 0 && tempEntry[1] == 0){
-            return  BPBcache->BPB_RsvdSecCnt*512 + i;
+            return  i;
         }
     }
     return -1;
@@ -382,22 +387,24 @@ TVMStatus FileRead(int filedescriptor, void *data, int *length){
     if(data == NULL || length == NULL)
         return VM_STATUS_ERROR_INVALID_PARAMETER;
 
-    void* mem = NULL;
+    void* mem;
+    int k = 0;
     for(int i = *length; i > 0; i -= 512){
-        if(!sharedMem->memChunks.empty()){
-            mem = sharedMem->memChunks.back();
-            sharedMem->memChunks.pop_back();
-        }
-        MachineFileRead(filedescriptor, mem, *length, &FileCallback, runningThread);
+        int len = (i < 512) ? i : 512;
+        mem = sharedMem->memChunks.back();
+        sharedMem->memChunks.pop_back();
+        MachineFileRead(filedescriptor, mem, len, &FileCallback, runningThread);
         threadSchedule(WAIT_FOR_FILE);
-        memcpy(data, mem, *length*sizeof(char));
+        memcpy(data, mem, len);
+        data = (char*)data + len;
         sharedMem->memChunks.push_back(mem);
+        k+=runningThread->fileResult;
     }
 
     if(runningThread->fileResult < 0)
         return VM_STATUS_FAILURE;
     else{
-        *length = runningThread->fileResult;
+        *length = k;
         return VM_STATUS_SUCCESS;
     }
 }
@@ -501,26 +508,8 @@ TVMStatus VMStart(int tickms, TVMMemorySize sharedsize, const char *mount, int a
     }
     FATcache = tmpFAT;
 
-    /*
-    len = 2;
-    FileSeek(fatFd, BPBcache->BPB_RsvdSecCnt*512, SEEK_SET , &offset);
-    uint8_t tmpEntry[2];
-    for(int i = 0; i < BPBcache->BPB_FATSz16*512; i+=2){
-        FileRead(fatFd, tmpEntry, &len);
-        std::cout << (int)tmpEntry[1] << "|" << (int)tmpEntry[0] << " ";
-    }
-    std::cout << "\n";
-    std::cout << FindFreeFATEntry() << "\n";
-     */
 
-    // Load root cache
-    /*
-    len = BPBcache->BPB_RootEntCnt*32;
-    uint8_t tmpRootCache[len];
-    FileSeek(fatFd, (BPBcache->BPB_RsvdSecCnt + (BPBcache->BPB_NumFATs * BPBcache->BPB_FATSz16))*512, SEEK_SET , &offset);
-    FileRead(fatFd, tmpRootCache, &len);
-    */
-
+    // Loads existing files into cache
     uint8_t tmpRootEntry[32];
     len = 32;
     FileSeek(FATFd, (BPBcache->BPB_RsvdSecCnt + (BPBcache->BPB_NumFATs * BPBcache->BPB_FATSz16))*512, SEEK_SET , &offset);
@@ -533,6 +522,7 @@ TVMStatus VMStart(int tickms, TVMMemorySize sharedsize, const char *mount, int a
         else{
             FATFile* ff = new FATFile();
             ff->FATindex = tmpRootEntry[26] + (tmpRootEntry[27] * 16);
+            ff->rootEntry.DSize = tmpRootEntry[28] + (tmpRootEntry[29] * 16);
             for(int i = 0; i < 11; i++){
                 if((char)tmpRootEntry[i] != ' ')
                     ff->rootEntry.DShortFileName[i] = (char)tmpRootEntry[i];
@@ -541,15 +531,6 @@ TVMStatus VMStart(int tickms, TVMMemorySize sharedsize, const char *mount, int a
         }
     }
 
-
-    /*
-    uint8_t testtmp[256];
-    len = 256;
-    FileSeek(FATFd, (BPBcache->BPB_RsvdSecCnt + (BPBcache->BPB_NumFATs * BPBcache->BPB_FATSz16))*512  + (BPBcache->BPB_RootEntCnt * 32) + (filesCache.back()->FATindex-2)*BPBcache->BPB_BytsPerSec, SEEK_SET , &offset);
-    FileRead(FATFd, testtmp, &len);
-    std::cout << (char*)testtmp << "\n";
-    std::cout << filesCache.back()->rootEntry.DShortFileName << " ====\n";
-*/
     main(argc, argv);
     MachineTerminate();
     VMUnloadModule();
@@ -579,11 +560,35 @@ TVMStatus VMFileOpen(const char *filename, int flags, int mode, int *filedescrip
             *filedescriptor = openFiles.size() + 3;
             (*it)->fd = openFiles.size() + 3;
             openFiles.push_back(*it);
-            std::cout << "-opening " << (*it)->rootEntry.DShortFileName << " success\n";
+            //std::cout << "-opening " << (*it)->rootEntry.DShortFileName << " success\n";
             return VM_STATUS_SUCCESS;
         }
     }
-    return VM_STATUS_ERROR_INVALID_PARAMETER;
+
+    int offset;
+    int len = 32;
+    uint8_t newEntry[32];
+    std::strcpy((char*)newEntry, filename);
+
+    uint16_t startCluster = FindFreeFATEntry();
+    std::cout << startCluster << " --> New File Data Cluster\n";
+    newEntry[26] = startCluster << 8 >> 8;
+    newEntry[27] = startCluster >> 8;
+    newEntry[28] = newEntry[29] = 0;
+
+    int newRootEntryIndex = FindFreeRootEntry();
+    FileSeek(FATFd, newRootEntryIndex, SEEK_SET, &offset);
+    FileWrite(FATFd, newEntry, &len);
+
+    FATFile* newFile = new FATFile();
+    newFile->fd = openFiles.size()+3;
+    *filedescriptor = openFiles.size() + 3;
+    newFile->FATindex = startCluster;
+    newFile->rootEntryByteIndex = newRootEntryIndex;
+    strcpy(newFile->rootEntry.DShortFileName, filename);
+    openFiles.push_back(newFile);
+
+    return VM_STATUS_SUCCESS;
 }
 
 TVMStatus VMFileClose(int filedescriptor){
@@ -598,18 +603,17 @@ TVMStatus VMFileRead(int filedescriptor, void *data, int *length){
         return FileRead(filedescriptor, data, length);
     }
     else{
-        FATFile ff;
+        //VMMutexAcquire(fatMutex, VM_TIMEOUT_INFINITE);
         for(auto it = openFiles.begin(); it != openFiles.end(); ++it){
             if((*it)->fd == filedescriptor){
                 int offset;
 
                 FileSeek(FATFd, (BPBcache->BPB_RsvdSecCnt + (BPBcache->BPB_NumFATs * BPBcache->BPB_FATSz16))*512  + (BPBcache->BPB_RootEntCnt * 32) + ((*it)->FATindex-2)*BPBcache->BPB_BytsPerSec, SEEK_SET , &offset);
-
                 FileRead(FATFd, data, length);
-                //std::cout << &data << "sfsdf\n";
                 return VM_STATUS_SUCCESS;
             }
         }
+        //VMMutexRelease(fatMutex);
     }
 
     return VM_STATUS_ERROR_INVALID_PARAMETER;
@@ -620,7 +624,26 @@ TVMStatus VMFileWrite(int filedescriptor, void *data, int *length){
         return FileWrite(filedescriptor, data, length);
     }
     else{
+        //VMMutexAcquire(fatMutex, VM_TIMEOUT_INFINITE);
+        for(auto it = openFiles.begin(); it != openFiles.end(); ++it){
+            if((*it)->fd == filedescriptor) {
+                int offset;
 
+                FileSeek(FATFd, (BPBcache->BPB_RsvdSecCnt + (BPBcache->BPB_NumFATs * BPBcache->BPB_FATSz16))*512  + (BPBcache->BPB_RootEntCnt * 32) + ((*it)->FATindex-2)*BPBcache->BPB_BytsPerSec, SEEK_SET , &offset);
+                FileWrite(FATFd, data, length);
+
+                /*
+                int len = 2;
+                uint8_t size[2];
+                size[0] = (*length + (*it)->rootEntry.DSize) << 8 >> 8;
+                size[1] = (*length + (*it)->rootEntry.DSize) >>8;
+                FileSeek(FATFd, (*it)->rootEntryByteIndex, SEEK_SET, &offset);
+                FileWrite(FATFd, size, &len);
+*/
+                return VM_STATUS_SUCCESS;
+            }
+        }
+        //VMMutexRelease(fatMutex);
     }
     return VM_STATUS_SUCCESS;
 }
@@ -876,5 +899,87 @@ TVMStatus VMMutexRelease(TVMMutexID mutexID){
     return VM_STATUS_ERROR_INVALID_ID;
 }
 //=====================================================================================================
+TVMStatus VMDirectoryCurrent(char *abspath){
+    abspath[0] = '/';
+    abspath[1] = '\0';
+    return VM_STATUS_SUCCESS;
+}
+
+int directoryByteIndex;
+
+TVMStatus VMDirectoryOpen(const char *dirname, int *dirdescriptor){
+    *dirdescriptor = 0;
+    directoryByteIndex = (BPBcache->BPB_RsvdSecCnt + (BPBcache->BPB_NumFATs*BPBcache->BPB_FATSz16))*512;
+    return VM_STATUS_SUCCESS;
+}
+
+TVMStatus VMDirectoryClose(int dirdescriptor){
+    return VM_STATUS_SUCCESS;
+}
+
+TVMStatus VMDirectoryChange(const char *path){
+    return VM_STATUS_SUCCESS;
+}
+
+TVMStatus VMDirectoryRead(int dirdescriptor, SVMDirectoryEntryRef dirent){
+    if(dirent == NULL)
+        return VM_STATUS_ERROR_INVALID_PARAMETER;
+
+    int offset = 0;
+    FileSeek(FATFd, directoryByteIndex, SEEK_SET, &offset);
+
+    uint8_t tmpEntry[32];
+    int len = 32;
+    FileRead(FATFd, tmpEntry, &len);
+
+    //End of Directory
+    if(tmpEntry[0] == 0x00)
+        return VM_STATUS_FAILURE;
+    while(tmpEntry[0] == 0xE5){
+        directoryByteIndex += 32;
+        FileRead(FATFd, tmpEntry, &len);
+    }
+
+    //Directory
+
+    if(tmpEntry[11] == 0xf){
+        for(int i = 0; i < 7; i++){
+            dirent->DLongFileName[i] = tmpEntry[i+1];
+        }
+        dirent->DLongFileName[255] = '\0';
+        FileRead(FATFd, tmpEntry, &len);
+        directoryByteIndex += 32;
+    }
+
+    if(tmpEntry[11] == 0x10){
+        dirent->DAttributes = 0x10;
+        dirent->DSize = NULL;
+
+        VMStringCopyN(dirent->DShortFileName, (char*)tmpEntry, 8);
+        dirent->DShortFileName[12] = '\0';
+    }
+    //File short name
+    else{
+        dirent->DAttributes = 0x00;
+        dirent->DSize = 0;
+        for (int i = 0; i < 8; i++) {
+            dirent->DSize += ((tmpEntry[28] >> i) & 0x1) * (0x1 << i);
+            dirent->DSize += ((tmpEntry[29] >> i) & 0x1) * (0x100 << i);
+        }
+
+        VMStringCopyN(dirent->DShortFileName, (char*)tmpEntry, 8);
+        dirent->DShortFileName[12] = '\0';
+
+        dirent->DModify.DSecond = (tmpEntry[22] << 3 >> 3)*2;
+        dirent->DModify.DMinute = ((tmpEntry[22] >> 5) | ((tmpEntry[23] & 0b00000111) << 3));
+        dirent->DModify.DHour = tmpEntry[23] >> 3;
+        dirent->DModify.DDay = tmpEntry[24] & 0b00011111;
+        dirent->DModify.DMonth = (tmpEntry[25] & 0x1 << 3) | (tmpEntry[24] >> 5);
+        dirent->DModify.DYear = (tmpEntry[25] >> 1) + 1980;
+    }
+    directoryByteIndex += 32;
+    return VM_STATUS_SUCCESS;
+
+}
 
 }
